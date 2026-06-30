@@ -1,4 +1,5 @@
 import Cocoa
+import ServiceManagement
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -8,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private enum DefaultsKey {
+        static let launchAtLoginPreference = "launchAtLoginPreference"
         static let watchedFolderBookmark = "watchedFolderBookmark"
     }
 
@@ -38,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
         buildStatusItem()
+        configureLaunchAtLoginIfNeeded()
         if hasWatchedFolderBookmark {
             startWatchingCurrentFolder()
             log("App started. Watching folder: \(watchedFolderURL.lastPathComponent)")
@@ -321,6 +324,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                                 action: #selector(openWatchedFolder),
                                 keyEquivalent: ""))
         menu.addItem(.separator())
+        let launchAtLogin = NSMenuItem(title: "Open at Login",
+                                       action: #selector(toggleLaunchAtLogin),
+                                       keyEquivalent: "")
+        launchAtLogin.state = isLaunchAtLoginEnabled ? .on : .off
+        menu.addItem(launchAtLogin)
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open App Log",
                                 action: #selector(openAppLog),
                                 keyEquivalent: ""))
@@ -332,8 +341,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusItem?.menu = menu
     }
 
+    private var isLaunchAtLoginEnabled: Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
+    private var shouldLaunchAtLogin: Bool {
+        if UserDefaults.standard.object(forKey: DefaultsKey.launchAtLoginPreference) == nil {
+            UserDefaults.standard.set(true, forKey: DefaultsKey.launchAtLoginPreference)
+        }
+        return UserDefaults.standard.bool(forKey: DefaultsKey.launchAtLoginPreference)
+    }
+
+    private func configureLaunchAtLoginIfNeeded() {
+        if shouldLaunchAtLogin {
+            enableLaunchAtLoginIfPossible()
+        } else if isLaunchAtLoginEnabled {
+            disableLaunchAtLogin()
+        }
+        updateStatusMenu()
+    }
+
+    private func enableLaunchAtLoginIfPossible() {
+        guard !isLaunchAtLoginEnabled else { return }
+
+        do {
+            try SMAppService.mainApp.register()
+            log("Enabled launch at login.")
+        } catch {
+            log("Failed to enable launch at login: \(error.localizedDescription)")
+        }
+    }
+
+    private func disableLaunchAtLogin() {
+        guard isLaunchAtLoginEnabled else { return }
+
+        do {
+            try SMAppService.mainApp.unregister()
+            log("Disabled launch at login.")
+        } catch {
+            log("Failed to disable launch at login: \(error.localizedDescription)")
+        }
+    }
+
     @objc private func toggleWatching() {
         setWatching(!isWatching)
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let enable = !isLaunchAtLoginEnabled
+        UserDefaults.standard.set(enable, forKey: DefaultsKey.launchAtLoginPreference)
+
+        if enable {
+            enableLaunchAtLoginIfPossible()
+        } else {
+            disableLaunchAtLogin()
+        }
+
+        updateStatusMenu()
     }
 
     private func setWatching(_ enabled: Bool) {
