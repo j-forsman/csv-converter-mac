@@ -33,34 +33,47 @@ struct CSVXLSXConverter {
 
     static func convert(csvURL: URL) throws -> URL {
         let csvURL = csvURL.standardizedFileURL
-        let outputURL = outputURL(for: csvURL)
         let csvText = try readCSVText(from: csvURL)
         let delimiter = CSVParser.detectDelimiter(in: csvText)
-        let rows = try CSVParser.parse(csvText, delimiter: delimiter)
+        let rows = try CSVParser.parse(csvText,
+                                       delimiter: delimiter,
+                                       maxRows: maxRows,
+                                       maxColumns: maxColumns)
 
         try validate(rows: rows)
         let workbook = XLSXWorkbook(rows: rows)
-        try workbook.write(to: outputURL)
-        return outputURL
+        return try write(workbook: workbook, for: csvURL)
     }
 
-    private static func outputURL(for csvURL: URL) -> URL {
+    private static func outputURLs(for csvURL: URL) -> [URL] {
         let directory = csvURL.deletingLastPathComponent()
         let baseName = "\(csvURL.deletingPathExtension().lastPathComponent) converted"
 
         let base = directory.appendingPathComponent(baseName).appendingPathExtension("xlsx")
-        if !FileManager.default.fileExists(atPath: base.path) {
-            return base
+        let numbered = (2...999).map { suffix in
+            directory.appendingPathComponent("\(baseName) \(suffix)").appendingPathExtension("xlsx")
         }
-        for suffix in 2...999 {
-            let candidate = directory.appendingPathComponent("\(baseName) \(suffix)").appendingPathExtension("xlsx")
-            if !FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
+        let fallbackName = "\(baseName) \(Int(Date().timeIntervalSince1970))"
+        let fallback = directory.appendingPathComponent(fallbackName).appendingPathExtension("xlsx")
+        return [base] + numbered + [fallback]
+    }
+
+    private static func write(workbook: XLSXWorkbook, for csvURL: URL) throws -> URL {
+        let archive = try workbook.makeArchive()
+
+        for outputURL in outputURLs(for: csvURL) where !FileManager.default.fileExists(atPath: outputURL.path) {
+            do {
+                try XLSXWorkbook.write(archive: archive, to: outputURL)
+                return outputURL
+            } catch {
+                if error.isFileAlreadyExistsError {
+                    continue
+                }
+                throw error
             }
         }
 
-        let fallbackName = "\(baseName) \(Int(Date().timeIntervalSince1970))"
-        return directory.appendingPathComponent(fallbackName).appendingPathExtension("xlsx")
+        throw CSVXLSXConversionError.invalidOutputPath
     }
 
     private static func readCSVText(from url: URL) throws -> String {
@@ -109,7 +122,7 @@ private enum CSVParser {
         return scores.max { $0.value < $1.value }?.key ?? ","
     }
 
-    static func parse(_ text: String, delimiter: Character) throws -> [[String]] {
+    static func parse(_ text: String, delimiter: Character, maxRows: Int, maxColumns: Int) throws -> [[String]] {
         // Swift's String iterator yields \r\n as a single Character (one Unicode grapheme
         // cluster), so it never matches the individual "\r" or "\n" checks below.
         // Normalize all line endings to \n first to avoid this.
@@ -124,13 +137,19 @@ private enum CSVParser {
         var insideQuotes = false
         var pendingQuote = false
 
-        func finishField() {
+        func finishField() throws {
+            guard row.count < maxColumns else {
+                throw CSVXLSXConversionError.tooManyColumns(row.count + 1)
+            }
             row.append(field)
             field.removeAll(keepingCapacity: true)
         }
 
-        func finishRow() {
-            finishField()
+        func finishRow() throws {
+            try finishField()
+            guard rows.count < maxRows else {
+                throw CSVXLSXConversionError.tooManyRows(rows.count + 1)
+            }
             rows.append(row)
             row.removeAll(keepingCapacity: true)
         }
@@ -145,9 +164,9 @@ private enum CSVParser {
                         insideQuotes = false
                         pendingQuote = false
                         if character == delimiter {
-                            finishField()
+                            try finishField()
                         } else if character == "\n" {
-                            finishRow()
+                            try finishRow()
                         } else {
                             field.append(character)
                         }
@@ -161,9 +180,9 @@ private enum CSVParser {
                 insideQuotes = true
             } else {
                 if character == delimiter {
-                    finishField()
+                    try finishField()
                 } else if character == "\n" {
-                    finishRow()
+                    try finishRow()
                 } else {
                     field.append(character)
                 }
@@ -175,7 +194,10 @@ private enum CSVParser {
         }
 
         if !field.isEmpty || !row.isEmpty || text.last == delimiter {
-            finishField()
+            try finishField()
+            guard rows.count < maxRows else {
+                throw CSVXLSXConversionError.tooManyRows(rows.count + 1)
+            }
             rows.append(row)
         }
 
@@ -192,11 +214,14 @@ private struct XLSXWorkbook {
         self.columnCount = max(rows.map(\.count).max() ?? 1, 1)
     }
 
-    func write(to outputURL: URL) throws {
+    func makeArchive() throws -> Data {
         guard let archive = ZipArchive.make(entries: entries()) else {
             throw CSVXLSXConversionError.outputTooLarge
         }
+        return archive
+    }
 
+    static func write(archive: Data, to outputURL: URL) throws {
         let parent = outputURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
 
@@ -520,6 +545,13 @@ private extension Data {
         append(UInt8((value >> 8) & 0xff))
         append(UInt8((value >> 16) & 0xff))
         append(UInt8((value >> 24) & 0xff))
+    }
+}
+
+private extension Error {
+    var isFileAlreadyExistsError: Bool {
+        let error = self as NSError
+        return error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError
     }
 }
 

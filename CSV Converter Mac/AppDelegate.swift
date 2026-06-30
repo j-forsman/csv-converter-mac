@@ -154,16 +154,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         pendingSince = pendingSince.filter { currentPaths.contains($0.key) }
 
         for (path, snapshot) in currentSnapshots {
-            if !convertExistingFiles, knownSnapshots[path] == snapshot {
+            if !convertExistingFiles && knownSnapshots[path] == snapshot {
                 continue
             }
 
-            if convertExistingFiles {
-                pendingSnapshots.removeValue(forKey: path)
-                pendingSince.removeValue(forKey: path)
-                knownSnapshots[path] = snapshot
-                enqueueConversion(for: path)
-            } else if pendingSnapshots[path] == snapshot {
+            if pendingSnapshots[path] == snapshot {
                 guard let firstStableSeen = pendingSince[path] else {
                     pendingSince[path] = Date()
                     continue
@@ -174,7 +169,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     knownSnapshots[path] = snapshot
                     enqueueConversion(for: path)
                 }
-            } else if pendingSnapshots[path] != snapshot {
+            } else {
+                if convertExistingFiles {
+                    knownSnapshots.removeValue(forKey: path)
+                }
                 pendingSnapshots[path] = snapshot
                 pendingSince[path] = Date()
             }
@@ -324,10 +322,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                                 action: #selector(openWatchedFolder),
                                 keyEquivalent: ""))
         menu.addItem(.separator())
-        let launchAtLogin = NSMenuItem(title: "Open at Login",
+        let launchAtLogin = NSMenuItem(title: launchAtLoginMenuTitle,
                                        action: #selector(toggleLaunchAtLogin),
                                        keyEquivalent: "")
-        launchAtLogin.state = isLaunchAtLoginEnabled ? .on : .off
+        launchAtLogin.state = launchAtLoginMenuState
         menu.addItem(launchAtLogin)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open App Log",
@@ -343,6 +341,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private var isLaunchAtLoginEnabled: Bool {
         SMAppService.mainApp.status == .enabled
+    }
+
+    private var isLaunchAtLoginRegisteredOrPending: Bool {
+        let status = SMAppService.mainApp.status
+        return status == .enabled || status == .requiresApproval
+    }
+
+    private var launchAtLoginMenuTitle: String {
+        SMAppService.mainApp.status == .requiresApproval ? "Open at Login (Needs Approval)" : "Open at Login"
+    }
+
+    private var launchAtLoginMenuState: NSControl.StateValue {
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            return .on
+        case .requiresApproval:
+            return .mixed
+        default:
+            return .off
+        }
     }
 
     private var shouldLaunchAtLogin: Bool {
@@ -362,7 +380,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func enableLaunchAtLoginIfPossible() {
-        guard !isLaunchAtLoginEnabled else { return }
+        guard !isLaunchAtLoginRegisteredOrPending else {
+            if SMAppService.mainApp.status == .requiresApproval {
+                log("Launch at login requires approval in System Settings.")
+            }
+            return
+        }
 
         do {
             try SMAppService.mainApp.register()
@@ -373,7 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func disableLaunchAtLogin() {
-        guard isLaunchAtLoginEnabled else { return }
+        guard isLaunchAtLoginRegisteredOrPending else { return }
 
         do {
             try SMAppService.mainApp.unregister()
@@ -388,7 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func toggleLaunchAtLogin() {
-        let enable = !isLaunchAtLoginEnabled
+        let enable = !isLaunchAtLoginRegisteredOrPending
         UserDefaults.standard.set(enable, forKey: DefaultsKey.launchAtLoginPreference)
 
         if enable {
