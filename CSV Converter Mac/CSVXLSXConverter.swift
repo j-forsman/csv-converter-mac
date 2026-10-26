@@ -568,7 +568,7 @@ private extension String {
             case "\"": escaped += "&quot;"
             case "'": escaped += "&apos;"
             default:
-                if scalar.value == 9 || scalar.value == 10 || scalar.value == 13 || scalar.value >= 32 {
+                if scalar.value == 9 || scalar.value == 10 || scalar.value == 13 || (scalar.value >= 32 && scalar.value != 0xFFFE && scalar.value != 0xFFFF) {
                     escaped.unicodeScalars.append(scalar)
                 }
             }

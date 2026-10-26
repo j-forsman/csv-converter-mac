@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 app_name="CSV Converter Mac.app"
 project="CSV Converter Mac.xcodeproj"
 scheme="CSV Converter Mac"
-derived_data="/tmp/csv-converter-mac-install-derived"
+# Per-user temp dir (not shared /tmp) so other local users cannot tamper with the build.
+derived_data="$(getconf DARWIN_USER_TEMP_DIR)csv-converter-mac-install-derived"
 built_app="$derived_data/Build/Products/Debug/$app_name"
 target_app="/Applications/$app_name"
 
